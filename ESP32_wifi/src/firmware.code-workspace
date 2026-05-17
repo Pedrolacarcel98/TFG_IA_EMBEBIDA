@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": "../../../pruebaESP32/firmware"
+		},
+		{
+			"name": "ESP32_pruebas",
+			"path": ".."
+		}
+	],
+	"settings": {}
+}

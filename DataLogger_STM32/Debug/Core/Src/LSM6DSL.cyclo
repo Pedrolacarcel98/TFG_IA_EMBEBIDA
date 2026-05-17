@@ -1,0 +1,5 @@
+../Core/Src/LSM6DSL.c:16:6:LSM6DSL_Init	1
+../Core/Src/LSM6DSL.c:24:9:LSM6DSL_DataReady	1
+../Core/Src/LSM6DSL.c:32:6:LSM6DSL_ReadAccel	2
+../Core/Src/LSM6DSL.c:45:6:MPU6050_Init	2
+../Core/Src/LSM6DSL.c:63:6:MPU6050_ReadAccel	2
