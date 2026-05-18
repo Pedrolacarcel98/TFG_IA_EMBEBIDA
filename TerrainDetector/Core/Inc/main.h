@@ -69,6 +69,8 @@ void Error_Handler(void);
 #define LED_AMARILLO_GPIO_Port GPIOA
 #define LED_ROJO_Pin GPIO_PIN_7
 #define LED_ROJO_GPIO_Port GPIOA
+#define LED_BLANCO_Pin GPIO_PIN_4
+#define LED_BLANCO_GPIO_Port GPIOA
 #define TMS_Pin GPIO_PIN_13
 #define TMS_GPIO_Port GPIOA
 #define TCK_Pin GPIO_PIN_14

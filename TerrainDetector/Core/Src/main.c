@@ -56,6 +56,16 @@ UART_HandleTypeDef huart2;
 float input_signal[NEAI_INPUT_SIGNAL_LENGTH * NEAI_INPUT_AXIS_NUMBER];
 float probabilities[NEAI_NUMBER_OF_CLASSES];
 int id_class = 0;
+
+/* Control de programa y logging */
+volatile uint8_t programa_corriendo = 0; 
+uint8_t prev_programa_corriendo = 0;
+uint32_t ultimo_tiempo_boton = 0;
+uint32_t last_log_tick = 0;
+
+#define MAX_SAMPLES 5000
+uint8_t status_buffer[MAX_SAMPLES];
+uint16_t sample_count = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -132,54 +142,94 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-        float accel[3];
-        char uart_msg[64];
+        // Detectar transición de Parado -> Iniciado
+        if (programa_corriendo == 1 && prev_programa_corriendo == 0) {
+            HAL_GPIO_WritePin(GPIOA, LED_BLANCO_Pin, GPIO_PIN_SET); // Encender monitoreo
+            sample_count = 0;
+            last_log_tick = HAL_GetTick();
+            prev_programa_corriendo = 1;
+        }
 
-        // 1. Captura de datos: Llenado del buffer (x, y, z)
-        for(uint16_t i=0; i < NEAI_INPUT_SIGNAL_LENGTH; i++){
-            MPU6050_ReadAccel(accel);
+        // Detectar transición de Iniciado -> Parado (Envío de lote)
+        if (programa_corriendo == 0 && prev_programa_corriendo == 1) {
+            HAL_GPIO_WritePin(GPIOA, LED_BLANCO_Pin, GPIO_PIN_RESET); // Apagar monitoreo
+            HAL_GPIO_WritePin(GPIOA, LED_VERDE_Pin|LED_AMARILLO_Pin|LED_ROJO_Pin, GPIO_PIN_RESET);
             
-            input_signal[3*i] = accel[0];
-            input_signal[3*i+1] = accel[1];
-            input_signal[3*i+2] = accel[2];
-
-            // Frecuencia de muestreo (10ms -> 100Hz)
-            HAL_Delay(10);
-        }
-
-        // 2. Ejecutar Inferencia local en la STM32
-        neai_classification(input_signal, probabilities, &id_class);
-
-        // 3. Lógica de LEDs Dinámica basada en nombres exactos
-        // Apagar todos los LEDs por defecto
-        HAL_GPIO_WritePin(GPIOA, LED_VERDE_Pin|LED_AMARILLO_Pin|LED_ROJO_Pin, GPIO_PIN_RESET);
-        
-        // Obtenemos el nombre real configurado en NanoEdge AI Studio
-        const char* terrain_name = neai_get_class_name(id_class);
-
-        if (terrain_name != NULL) {
-            // Mapeo exacto según tus clases: REPOSO, SUELO PIEDRA, LISO, ASFALTO_RUGOSO
-            if (strcmp(terrain_name, "LISO") == 0) {
-                HAL_GPIO_WritePin(GPIOA, LED_VERDE_Pin, GPIO_PIN_SET);
-            } 
-            else if (strcmp(terrain_name, "SUELO PIEDRA") == 0) {
-                HAL_GPIO_WritePin(GPIOA, LED_AMARILLO_Pin, GPIO_PIN_SET);
-            } 
-            else if (strcmp(terrain_name, "ASFALTO_RUGOSO") == 0) {
-                HAL_GPIO_WritePin(GPIOA, LED_ROJO_Pin, GPIO_PIN_SET);
+            HAL_UART_Transmit(&huart1, (uint8_t*)"START_BATCH\n", 12, 100);
+            for (uint16_t i = 0; i < sample_count; i++) {
+                const char* name = neai_get_class_name(status_buffer[i]);
+                char msg[32];
+                snprintf(msg, sizeof(msg), "DET:%s\n", name ? name : "UNKNOWN");
+                HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
+                HAL_Delay(1); // Sincronización: 1ms para no saturar el puente WiFi
             }
-            // Si es "REPOSO", todos los LEDs se quedan apagados (RESET arriba)
-        } else {
-            terrain_name = "DESCONOCIDO";
+            HAL_UART_Transmit(&huart1, (uint8_t*)"END_BATCH\n", 10, 100);
+            
+            sample_count = 0;
+            prev_programa_corriendo = 0;
         }
 
-        // 4. Reporte hacia ESP32 (Server WiFi) y Debug UART
-        snprintf(uart_msg, sizeof(uart_msg), "DET:%s\n", terrain_name);
-        HAL_UART_Transmit(&huart1, (uint8_t*)uart_msg, strlen(uart_msg), HAL_MAX_DELAY);
-        HAL_UART_Transmit(&huart2, (uint8_t*)uart_msg, strlen(uart_msg), HAL_MAX_DELAY);
+        if (programa_corriendo)
+        {
+            float accel[3];
 
-        // Pausa entre inferencias para evitar saturar el log
-        HAL_Delay(100);
+            // 1. Captura de datos: Llenado del buffer (x, y, z)
+            for(uint16_t i=0; i < NEAI_INPUT_SIGNAL_LENGTH; i++){
+                MPU6050_ReadAccel(accel);
+                
+                input_signal[3*i] = accel[0];
+                input_signal[3*i+1] = accel[1];
+                input_signal[3*i+2] = accel[2];
+
+                // Logging cada 100ms durante la captura
+                if (HAL_GetTick() - last_log_tick >= 100) {
+                    if (sample_count < MAX_SAMPLES) {
+                        status_buffer[sample_count++] = (uint8_t)id_class;
+                    }
+                    last_log_tick = HAL_GetTick();
+                }
+
+                // Frecuencia de muestreo (10ms -> 100Hz)
+                HAL_Delay(10);
+                if (!programa_corriendo) break;
+            }
+
+            if (!programa_corriendo) continue;
+
+            // 2. Ejecutar Inferencia local en la STM32
+            neai_classification(input_signal, probabilities, &id_class);
+
+            // 3. Lógica de LEDs
+            HAL_GPIO_WritePin(GPIOA, LED_VERDE_Pin|LED_AMARILLO_Pin|LED_ROJO_Pin, GPIO_PIN_RESET);
+            const char* terrain_name = neai_get_class_name(id_class);
+
+            if (terrain_name != NULL) {
+                if (strcmp(terrain_name, "LISO") == 0) {
+                    HAL_GPIO_WritePin(GPIOA, LED_VERDE_Pin, GPIO_PIN_SET);
+                } 
+                else if (strcmp(terrain_name, "SUELO PIEDRA") == 0) {
+                    HAL_GPIO_WritePin(GPIOA, LED_AMARILLO_Pin, GPIO_PIN_SET);
+                } 
+                else if (strcmp(terrain_name, "ASFALTO_RUGOSO") == 0) {
+                    HAL_GPIO_WritePin(GPIOA, LED_ROJO_Pin, GPIO_PIN_SET);
+                }
+            }
+            
+            // Pequeña pausa para no saturar CPU, manteniendo el log de 100ms
+            for(int j=0; j<10; j++) {
+                if (HAL_GetTick() - last_log_tick >= 100) {
+                    if (sample_count < MAX_SAMPLES) status_buffer[sample_count++] = (uint8_t)id_class;
+                    last_log_tick = HAL_GetTick();
+                }
+                HAL_Delay(10);
+                if (!programa_corriendo) break;
+            }
+        }
+        else 
+        {
+            // Espera pasiva para no consumir recursos innecesarios
+            HAL_Delay(100);
+        }
 
     /* USER CODE END WHILE */
 
@@ -425,7 +475,7 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, LED_VERDE_Pin|LED_AMARILLO_Pin|LED_ROJO_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, LED_VERDE_Pin|LED_AMARILLO_Pin|LED_ROJO_Pin|LED_BLANCO_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
@@ -433,12 +483,16 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : LED_VERDE_Pin LED_AMARILLO_Pin LED_ROJO_Pin */
-  GPIO_InitStruct.Pin = LED_VERDE_Pin|LED_AMARILLO_Pin|LED_ROJO_Pin;
+  /*Configure GPIO pins : LED_VERDE_Pin LED_AMARILLO_Pin LED_ROJO_Pin LED_BLANCO_Pin */
+  GPIO_InitStruct.Pin = LED_VERDE_Pin|LED_AMARILLO_Pin|LED_ROJO_Pin|LED_BLANCO_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -446,7 +500,18 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    if(GPIO_Pin == B1_Pin)
+    {
+        // Antirrebote de 250ms
+        if (HAL_GetTick() - ultimo_tiempo_boton > 250)
+        {
+            programa_corriendo = !programa_corriendo; // Cambia entre encendido/apagado
+            ultimo_tiempo_boton = HAL_GetTick();
+        }
+    }
+}
 /* USER CODE END 4 */
 
 /**

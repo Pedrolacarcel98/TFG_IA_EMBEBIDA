@@ -10,14 +10,13 @@ const uint16_t puerto = 8082;
 WiFiClient cliente;
 
 void setup() {
-  // Serial USB para debug en tu pantalla
   Serial.begin(115200);   
   
-  // Serial2 para leer los datos que vienen de la STM32
-  // En la mayoría de ESP32: RX2 = Pin 16, TX2 = Pin 17
+  // Aumentamos el buffer de recepción para no perder datos en ráfagas (Batch)
+  Serial2.setRxBufferSize(4096); 
   Serial2.begin(115200);  
 
-  Serial.println("Iniciando ESP32 en modo Puente Wi-Fi...");
+  Serial.println("Iniciando ESP32 en modo Puente Robusto...");
 
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
@@ -28,25 +27,25 @@ void setup() {
 }
 
 void loop() {
-  // Mantener la conexión con el servidor Python
+  // Mejora en la reconexión: stop() asegura que el socket se limpie
   if (!cliente.connected()) {
-    Serial.println("Buscando servidor Python...");
-    cliente.connect(ip_PC, puerto);
-    delay(1000);
+    Serial.println("Buscando servidor PC...");
+    cliente.stop(); 
+    if (cliente.connect(ip_PC, puerto)) {
+      Serial.println("Conexión establecida con el Servidor.");
+    } else {
+      delay(2000); // Esperar un poco antes de reintentar
+    }
   }
 
-  // Si estamos conectados y la STM32 nos envía datos
-  if (cliente.connected() && Serial2.available()) {
-    // Leemos la ventana completa hasta el salto de línea
-    String data = Serial2.readStringUntil('\n');
-    data.trim(); // Limpiamos espacios extra o retornos de carro
-    
-    if (data.length() > 0) {
-      // Enviamos el bloque completo por Wi-Fi con un solo salto de línea
-      cliente.print(data + "\n");
+  // Lectura eficiente y reenvío
+  if (cliente.connected()) {
+    while (Serial2.available() > 0) {
+      char c = Serial2.read();
+      cliente.write(c); // Reenvío byte a byte es más síncrono y evita esperas de newline
       
-      // Mostrar por consola un resumen para verificar que fluye
-      Serial.println("Reenviado al PC -> " + data);
+      // Opcional: ver por debug (solo si no satura)
+      // Serial.print(c); 
     }
   }
 }
