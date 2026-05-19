@@ -62,6 +62,8 @@ volatile uint8_t programa_corriendo = 0;
 uint8_t prev_programa_corriendo = 0;
 uint32_t ultimo_tiempo_boton = 0;
 uint32_t last_log_tick = 0;
+uint32_t session_start_tick = 0;
+uint32_t travel_time_ms = 0;
 
 #define MAX_SAMPLES 5000
 uint8_t status_buffer[MAX_SAMPLES];
@@ -146,12 +148,14 @@ int main(void)
         if (programa_corriendo == 1 && prev_programa_corriendo == 0) {
             HAL_GPIO_WritePin(GPIOA, LED_BLANCO_Pin, GPIO_PIN_SET); // Encender monitoreo
             sample_count = 0;
-            last_log_tick = HAL_GetTick();
+            session_start_tick = HAL_GetTick(); // Inicio del viaje
+            last_log_tick = session_start_tick;
             prev_programa_corriendo = 1;
         }
 
         // Detectar transición de Iniciado -> Parado (Envío de lote)
         if (programa_corriendo == 0 && prev_programa_corriendo == 1) {
+            travel_time_ms = HAL_GetTick() - session_start_tick; // Duración total
             HAL_GPIO_WritePin(GPIOA, LED_BLANCO_Pin, GPIO_PIN_RESET); // Apagar monitoreo
             HAL_GPIO_WritePin(GPIOA, LED_VERDE_Pin|LED_AMARILLO_Pin|LED_ROJO_Pin, GPIO_PIN_RESET);
             
@@ -163,7 +167,10 @@ int main(void)
                 HAL_UART_Transmit(&huart1, (uint8_t*)msg, strlen(msg), 100);
                 HAL_Delay(1); // Sincronización: 1ms para no saturar el puente WiFi
             }
-            HAL_UART_Transmit(&huart1, (uint8_t*)"END_BATCH\n", 10, 100);
+            
+            char end_msg[64];
+            snprintf(end_msg, sizeof(end_msg), "END_BATCH:%lu\n", travel_time_ms);
+            HAL_UART_Transmit(&huart1, (uint8_t*)end_msg, strlen(end_msg), 100);
             
             sample_count = 0;
             prev_programa_corriendo = 0;
