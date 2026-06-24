@@ -4,6 +4,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import time
 import csv
+import os
+import sys
 from datetime import datetime
 import sqlite3
 
@@ -143,6 +145,12 @@ class ServerApp:
         self.btn_stop = ttk.Button(self.ctrl_frame, text="Detener Servidor", command=self.stop_server, state="disabled")
         self.btn_stop.pack(side="left", padx=5)
 
+        self.btn_restart = ttk.Button(self.ctrl_frame, text="Reiniciar Servidor", command=self.restart_server)
+        self.btn_restart.pack(side="left", padx=5)
+
+        self.btn_hard_reset = ttk.Button(self.ctrl_frame, text="Reset Completo", command=self.hard_reset)
+        self.btn_hard_reset.pack(side="right", padx=5)
+
         # --- Pestaña 2: Historial y Analítica ---
         self.tab_history = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_history, text="Historial de Viajes")
@@ -195,6 +203,7 @@ class ServerApp:
         self.running = True
         self.btn_start.config(state="disabled")
         self.btn_stop.config(state="normal")
+        self.btn_restart.config(state="normal")
         self.lbl_status.config(text=f"Escuchando en puerto {PORT}...", foreground="orange")
         self.log_event("Servidor iniciado.")
         
@@ -206,61 +215,88 @@ class ServerApp:
         self.lbl_status.config(text="Servidor detenido.", foreground="red")
         self.btn_start.config(state="normal")
         self.btn_stop.config(state="disabled")
+        self.btn_restart.config(state="normal")
         self.log_event("Servidor detenido manualmente.")
 
+    def restart_server(self):
+        self.log_event("Reiniciando servidor...")
+        self.stop_server()
+        self.btn_restart.config(state="disabled")
+        # Esperamos un poco más que el timeout del socket (1s) para asegurar que el hilo termine
+        self.root.after(1500, self.start_server)
+
+    def hard_reset(self):
+        if messagebox.askyesno("Reset Completo", "¿Estás seguro de que quieres reiniciar TODA la aplicación?"):
+            self.log_event("Ejecutando reset completo del programa...")
+            python = sys.executable
+            os.execl(python, python, *sys.argv)
+
     def network_loop(self):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind((HOST, PORT))
-            s.listen(1)
-            s.settimeout(1.0)
-            
-            while self.running:
-                try:
-                    conn, addr = s.accept()
-                    with conn:
-                        self.root.after(0, lambda: self.on_connect(addr[0]))
-                        buffer = ""
-                        while self.running:
-                            try:
-                                data = conn.recv(4096)
-                                if not data: break
-                                
-                                raw_str = data.decode('utf-8', errors='ignore')
-                                buffer += raw_str
-                                
-                                while '\n' in buffer:
-                                    line, buffer = buffer.split('\n', 1)
-                                    line = line.strip()
-                                    
-                                    if "START_BATCH" in line:
-                                        self.is_collecting = True
-                                        self.batch_data = []
-                                        self.root.after(0, self.on_start_batch)
-                                    
-                                    elif "END_BATCH" in line:
-                                        time_ms = 0
-                                        if ":" in line:
-                                            try:
-                                                time_ms = int(line.split(":")[1])
-                                            except: pass
-                                        self.travel_time_s = time_ms / 1000.0
-                                        self.is_collecting = False
-                                        self.root.after(0, self.on_end_batch)
-                                    
-                                    elif "DET:" in line and self.is_collecting:
-                                        terrain = line.split("DET:")[1].strip()
-                                        self.batch_data.append(terrain)
-                            except ConnectionResetError:
-                                break 
-                        self.root.after(0, self.on_disconnect)
-                                    
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    print(f"Error en servidor: {e}")
-                    time.sleep(1)
-                    continue
+        while self.running:
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    s.bind((HOST, PORT))
+                    s.listen(5)
+                    s.settimeout(1.0)
+                    
+                    while self.running:
+                        try:
+                            conn, addr = s.accept()
+                            with conn:
+                                # Usamos addr[0] para obtener la IP
+                                ip_addr = addr[0]
+                                self.root.after(0, lambda: self.on_connect(ip_addr))
+                                buffer = ""
+                                conn.settimeout(2.0) # Timeout para recv
+                                while self.running:
+                                    try:
+                                        data = conn.recv(4096)
+                                        if not data: break
+                                        
+                                        raw_str = data.decode('utf-8', errors='ignore')
+                                        buffer += raw_str
+                                        
+                                        while '\n' in buffer:
+                                            line, buffer = buffer.split('\n', 1)
+                                            line = line.strip()
+                                            
+                                            if "START_BATCH" in line:
+                                                self.is_collecting = True
+                                                self.batch_data = []
+                                                self.root.after(0, self.on_start_batch)
+                                            
+                                            elif "END_BATCH" in line:
+                                                time_ms = 0
+                                                if ":" in line:
+                                                    try:
+                                                        time_ms = int(line.split(":")[1])
+                                                    except: pass
+                                                self.travel_time_s = time_ms / 1000.0
+                                                self.is_collecting = False
+                                                self.root.after(0, self.on_end_batch)
+                                            
+                                            elif "DET:" in line and self.is_collecting:
+                                                terrain = line.split("DET:")[1].strip()
+                                                self.batch_data.append(terrain)
+                                    except socket.timeout:
+                                        continue
+                                    except ConnectionResetError:
+                                        break
+                                    except Exception as e:
+                                        print(f"Error en recepción: {e}")
+                                        break
+                                self.root.after(0, self.on_disconnect)
+                        except socket.timeout:
+                            continue
+                        except Exception as e:
+                            if self.running:
+                                print(f"Error aceptando conexión: {e}")
+                            break
+            except Exception as e:
+                if self.running:
+                    self.root.after(0, lambda: self.log_event(f"Error crítico de red: {e}"))
+                time.sleep(2)
 
     def on_connect(self, ip):
         self.lbl_status.config(text=f"Conectado con ESP32: {ip}", foreground="green")

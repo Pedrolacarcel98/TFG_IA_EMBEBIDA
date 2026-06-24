@@ -4,7 +4,7 @@
 // --- CONFIGURACIÓN DE RED ---
 const char* ssid = "PixelPedro";
 const char* password = "pua12398";
-const char* ip_PC = "10.152.249.23"; // IP de tu PC
+const char* ip_PC = "192.168.157.23"; // IP de tu PC
 const uint16_t puerto = 8082;
 
 WiFiClient cliente;
